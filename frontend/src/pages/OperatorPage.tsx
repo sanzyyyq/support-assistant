@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AlertCircle, Inbox } from 'lucide-react';
 import { api } from '../api/client';
-import type { Message, Quote, Ticket, TicketStatus } from '../api/types';
-import { OPERATOR } from '../config';
+import type { Message, Operator, Quote, Ticket, TicketStatus } from '../api/types';
+import { useOperator } from './operator/operatorContext';
 import { Conversation } from './operator/Conversation';
 import { CustomerPanel } from './operator/CustomerPanel';
 import { TicketList, type Filter } from './operator/TicketList';
@@ -13,12 +13,12 @@ const PRIORITY: Record<TicketStatus, number> = { waiting: 0, operator: 1, ai: 2,
 const sortTickets = (list: Ticket[]) =>
   [...list].sort((a, b) => PRIORITY[a.status] - PRIORITY[b.status] || +new Date(b.updatedAt) - +new Date(a.updatedAt));
 
-const matchesFilter = (t: Ticket, f: Filter) => {
+const matchesFilter = (t: Ticket, f: Filter, me: Operator) => {
   switch (f) {
     case 'all':
       return t.status !== 'closed';
     case 'mine':
-      return t.status === 'operator' && t.assignee === OPERATOR.name;
+      return t.status === 'operator' && t.assignee === me.name;
     default:
       return t.status === f;
   }
@@ -29,6 +29,7 @@ const upsert = <T extends { id: string }>(list: T[], x: T) =>
 
 /** Обращения: список + диалог + карточка клиента */
 export function OperatorPage() {
+  const me = useOperator();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -114,21 +115,21 @@ export function OperatorPage() {
 
   const counts = useMemo(() => {
     const c: Record<Filter, number> = { all: 0, waiting: 0, ai: 0, mine: 0, closed: 0 };
-    for (const t of tickets) (Object.keys(c) as Filter[]).forEach((f) => matchesFilter(t, f) && c[f]++);
+    for (const t of tickets) (Object.keys(c) as Filter[]).forEach((f) => matchesFilter(t, f, me) && c[f]++);
     return c;
-  }, [tickets]);
+  }, [tickets, me]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     return sortTickets(tickets).filter(
       (t) =>
-        matchesFilter(t, filter) &&
+        matchesFilter(t, filter, me) &&
         (!q ||
           [t.customer.name, t.customer.company ?? '', String(t.number), t.lastMessage ?? '', t.customer.email ?? ''].some((s) =>
             s.toLowerCase().includes(q),
           )),
     );
-  }, [tickets, filter, query]);
+  }, [tickets, filter, query, me]);
 
   const selected = tickets.find((t) => t.id === selectedId) ?? null;
   const draft = selectedId ? drafts[selectedId] ?? '' : '';
@@ -146,22 +147,22 @@ export function OperatorPage() {
     }
   };
 
-  const join = () => selected && run(() => api.joinTicket(selected.id, OPERATOR.name), 'Не удалось подключиться к чату.');
+  const join = () => selected && run(() => api.joinTicket(selected.id), 'Не удалось подключиться к чату.');
   const release = () => selected && run(() => api.releaseToAi(selected.id), 'Не удалось вернуть диалог ИИ.');
   const close = () => selected && run(() => api.closeTicket(selected.id), 'Не удалось закрыть обращение.');
   const send = (text: string) => {
     if (!selected) return;
     const id = selected.id;
     setDrafts((d) => ({ ...d, [id]: '' }));
-    void run(() => api.sendOperatorMessage(id, text, OPERATOR.name), 'Сообщение не отправлено.');
+    void run(() => api.sendOperatorMessage(id, text), 'Сообщение не отправлено.');
   };
   const quickAction = async (text: string) => {
     if (!selected) return;
-    const mine = selected.status === 'operator' && selected.assignee === OPERATOR.name;
-    if (!mine) await run(() => api.joinTicket(selected.id, OPERATOR.name), 'Не удалось подключиться к чату.');
+    const mine = selected.status === 'operator' && selected.assignee === me.name;
+    if (!mine) await run(() => api.joinTicket(selected.id), 'Не удалось подключиться к чату.');
     setDrafts((d) => ({ ...d, [selected.id]: text }));
   };
-  const approve = (q: Quote) => run(() => api.approveQuote(q.id, OPERATOR.name), 'Не удалось согласовать КП.');
+  const approve = (q: Quote) => run(() => api.approveQuote(q.id), 'Не удалось согласовать КП.');
 
   return (
     <>

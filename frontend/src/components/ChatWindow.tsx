@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, Headset, RotateCcw, Sparkles, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { AlertCircle, Headset, Maximize2, RotateCcw, Sparkles, X } from 'lucide-react';
 import { api } from '../api/client';
 import type { Message, Quote, QuoteRequest, Ticket } from '../api/types';
 import { BRAND } from '../config';
@@ -65,9 +66,10 @@ export function ChatWindow({ variant, onClose, prompt }: Props) {
   useEffect(() => {
     const missing = messages.map((m) => m.quoteId).filter((id): id is string => !!id && !quotes[id]);
     for (const id of new Set(missing)) {
-      api.getQuote(id).then((q) => setQuotes((x) => ({ ...x, [q.id]: q }))).catch(() => undefined);
+      if (!ticketId) continue;
+      api.getCustomerQuote(ticketId, id).then((q) => setQuotes((x) => ({ ...x, [q.id]: q }))).catch(() => undefined);
     }
-  }, [messages, quotes]);
+  }, [messages, quotes, ticketId]);
 
   useEffect(() => {
     if (!ticketId) return;
@@ -90,7 +92,7 @@ export function ChatWindow({ variant, onClose, prompt }: Props) {
           void start();
           break;
       }
-    });
+    }, ticketId);
   }, [ticketId, start]);
 
   useEffect(() => {
@@ -178,6 +180,12 @@ export function ChatWindow({ variant, onClose, prompt }: Props) {
           <IconButton label="Начать новый диалог" variant="ghost" onClick={() => void start(true)}>
             <RotateCcw size={18} />
           </IconButton>
+          {variant === 'widget' && (
+            // Тот же диалог на весь экран: обращение хранится в браузере и подхватится на /chat
+            <Link className="icon-btn icon-btn--ghost" to="/chat" aria-label="Открыть чат на весь экран" title="Открыть чат на весь экран">
+              <Maximize2 size={17} />
+            </Link>
+          )}
           {onClose && (
             <IconButton label="Свернуть чат" variant="ghost" onClick={onClose}>
               <X size={20} />

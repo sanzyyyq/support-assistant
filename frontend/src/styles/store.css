@@ -41,6 +41,9 @@
   background: var(--bg-subtle);
   color: var(--text-placeholder);
 }
+.store__chat-link {
+  flex: none;
+}
 .store__search input {
   flex: 1;
   border: 0;
@@ -210,6 +213,9 @@
   .store__cats {
     padding-left: 16px;
     padding-right: 16px;
+  }
+  .store__chat-link {
+    margin-left: auto;
   }
   .store__search {
     display: none;

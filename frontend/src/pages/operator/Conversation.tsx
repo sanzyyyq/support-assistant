@@ -5,7 +5,7 @@ import type { Message, Quote, Ticket } from '../../api/types';
 import { Composer } from '../../components/Composer';
 import { MessageItem, TypingIndicator } from '../../components/MessageItem';
 import { Button, StatusBadge } from '../../components/ui';
-import { OPERATOR } from '../../config';
+import { useOperator } from './operatorContext';
 import { CHANNEL_LABEL, formatAgo, formatTime, initials } from '../../lib/format';
 
 interface Props {
@@ -25,7 +25,8 @@ interface Props {
 
 export function Conversation({ ticket, messages, botTyping, draft, onDraft, onJoin, onRelease, onClose, onSend, busy, quotes, onOpenQuote }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
-  const mine = ticket.status === 'operator' && ticket.assignee === OPERATOR.name;
+  const me = useOperator();
+  const mine = ticket.status === 'operator' && ticket.assignee === me.name;
   const lastUserId = [...messages].reverse().find((m) => m.sender === 'user')?.id;
 
   const [suggestion, setSuggestion] = useState<string | null>(null);
@@ -34,7 +35,7 @@ export function Conversation({ ticket, messages, botTyping, draft, onDraft, onJo
   const loadSuggestion = () => {
     setSuggestLoading(true);
     api
-      .getSuggestion(ticket.id, OPERATOR.name)
+      .getSuggestion(ticket.id)
       .then(setSuggestion)
       .catch(() => setSuggestion(null))
       .finally(() => setSuggestLoading(false));
@@ -47,7 +48,7 @@ export function Conversation({ ticket, messages, botTyping, draft, onDraft, onJo
     let cancelled = false;
     setSuggestLoading(true);
     api
-      .getSuggestion(ticket.id, OPERATOR.name)
+      .getSuggestion(ticket.id)
       .then((s) => !cancelled && setSuggestion(s))
       .catch(() => !cancelled && setSuggestion(null))
       .finally(() => !cancelled && setSuggestLoading(false));

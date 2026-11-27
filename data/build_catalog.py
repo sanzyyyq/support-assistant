@@ -1,7 +1,7 @@
 """Сборка компактного каталога для ИИ-консультанта из товарного фида Store (YML).
 
 Запуск (из папки support-assistant):
-    python3 data/build_catalog.py Mindbox.yml.gz.xml frontend/public/data/catalog.json.gz
+    python3 data/build_catalog.py Mindbox.yml.gz.xml backend/data/catalog.json.gz
 
 Что делает:
   * берёт доступные позиции с ценой, только ПО, без предложений для физлиц и учебных заведений;

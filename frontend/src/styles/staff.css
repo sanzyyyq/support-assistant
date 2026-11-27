@@ -1,0 +1,96 @@
+/* Сотрудники и профиль */
+.staff .panel {
+  max-width: 960px;
+}
+.staff__grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+}
+.staff__select {
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.staff__select:disabled {
+  opacity: 0.6;
+}
+.staff__table-wrap {
+  overflow-x: auto;
+}
+.staff__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.staff__table th {
+  padding: 0 12px 8px 0;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.staff__table td {
+  padding: 12px 12px 12px 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.staff__table tr.is-off td:not(:last-child) {
+  opacity: 0.55;
+}
+.staff__actions {
+  white-space: nowrap;
+  text-align: right;
+}
+.staff__reset td {
+  background: var(--bg-subtle);
+  padding: 12px;
+}
+.staff__reset form {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+.staff__reset .qform__field {
+  flex: 1;
+  max-width: 420px;
+}
+.staff__profile {
+  max-width: 440px !important;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.staff__profile .panel__title {
+  margin-bottom: 0;
+}
+.staff__profile dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0;
+  font-size: 14px;
+}
+.staff__profile dt {
+  color: var(--text-secondary);
+}
+.staff__profile dd {
+  margin: 0;
+}
+.staff__ok {
+  margin: 0;
+  font-size: 12px;
+  color: var(--success);
+}
+
+@media (max-width: 900px) {
+  .staff__grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}

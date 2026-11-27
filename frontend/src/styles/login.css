@@ -1,0 +1,60 @@
+/* Вход в кабинет менеджера */
+.login {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: var(--bg-app);
+}
+.login__card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 32px 28px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-float);
+}
+.login__logo {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+}
+.login__title {
+  margin: 4px 0 0;
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.login__hint {
+  margin: -6px 0 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.login__card .btn {
+  margin-top: 4px;
+}
+.login__client {
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.login__client a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-brand);
+  font-weight: 500;
+}

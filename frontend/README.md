@@ -50,18 +50,18 @@ docker compose up --build
 
 ## Данные
 
-Заглушка работает на **настоящих данных Store**:
+Агент работает на **настоящих данных Store** (сам агент — на сервере, `../backend/internal/agent`):
 
 | Что | Откуда | Как обновить |
 | --- | --- | --- |
-| Каталог: 6 000 продуктов, 33 903 позиции с ценами | товарный фид `Mindbox.yml.gz.xml` | `python3 data/build_catalog.py Mindbox.yml.gz.xml frontend/public/data/catalog.json.gz` |
-| Категории обращений и реальные формулировки | `чаты поддержки/*.txt` (495 обращений) | `python3 data/build_chats.py "чаты поддержки" frontend/src/api/mock/chats.json` |
-| База знаний | store.softline.ru/delivery_info, docs.softline.com | `src/api/mock/kb.ts` |
+| Каталог: 6 000 продуктов, 33 903 позиции с ценами | товарный фид `Mindbox.yml.gz.xml` | `python3 data/build_catalog.py Mindbox.yml.gz.xml backend/data/catalog.json.gz` |
+| Категории обращений и реальные формулировки | `чаты поддержки/*.txt` (495 обращений) | `python3 data/build_chats.py "чаты поддержки" backend/data/chats.json` |
+| База знаний | store.softline.ru/delivery_info, docs.softline.com | `backend/internal/agent/kb.go` |
 | Шаблон КП | «Шаблон КП ПАО Софтлайн» | `src/components/QuoteDocument.tsx`, `src/config.ts` |
 
 Команды запускаются из папки `support-assistant`. Сам фид (290 МБ) в репозиторий не кладём — в `.gitignore`.
 
-Как агент считает цену по фиду (`priceFor` в `src/api/mock/catalog.ts`):
+Как агент считает цену по фиду (`PriceFor` в `backend/internal/agent/catalog.go`):
 - **цена за единицу в диапазоне** — Kaspersky «цена при 50–99 узлах» × количество;
 - **пакет** — MDaemon «до 30 пользователей», Dr.Web «на 50 ПК»: берётся наименьший подходящий пакет;
 - **за штуку** — серверные и бессрочные лицензии.
@@ -73,25 +73,19 @@ docker compose up --build
 - В КП НДС «Без НДС» — только при номере реестра из фида; у остальных позиций «уточняется», ставку выбирает менеджер.
 - Если продукта нет в онлайн-каталоге (Power BI, ArchiCAD), агент так и говорит и передаёт менеджеру.
 
-Демо-обращения в кабинете — реальные реплики из переписок (номера тоже оттуда), прогнанные через того же бота.
+Демо-обращения в кабинете — реальные реплики из переписок (номера тоже оттуда), прогнанные через того же агента.
 
-## Бэкенд и офлайн-режим
+## Связь с сервером
 
-UI работает только через интерфейс `SupportApi` (`src/api/client.ts`).
+UI работает только через интерфейс `SupportApi` (`src/api/client.ts`); сервер — на Go в `../backend`.
 
 | Файл | Что делает |
 | --- | --- |
-| `src/api/types.ts` | контракт данных (Ticket, Message, Product, Quote, события) |
-| `src/api/client.ts` | интерфейс API и выбор реализации; эндпоинты описаны в комментариях |
-| `src/api/http.ts` | клиент сервера (REST + WebSocket `/api/ws`) — используется по умолчанию |
-| `src/api/core/service.ts` | логика API: диалоги, передача менеджеру, КП, статистика — общая для сервера и браузера |
-| `src/api/mock/*` | агент (`bot.ts`), каталог и цены (`catalog.ts`), варианты и КП (`offers.ts`), база знаний (`kb.ts`), демо-данные (`data.ts`) |
-| `src/api/mock/mockApi.ts`, `store.ts` | офлайн-режим: тот же сервис, данные в localStorage, события через BroadcastChannel |
+| `src/api/types.ts` | формат данных (Ticket, Message, Product, Quote, события) — совпадает с `backend/internal/model/types.go` |
+| `src/api/client.ts` | интерфейс API; эндпоинты описаны в комментариях |
+| `src/api/http.ts` | клиент сервера: REST + WebSocket `/api/ws` |
 
-Сервер (`../backend`) подключает `core/service.ts` и модули из `mock/` к файловому хранилищу и WebSocket,
-поэтому агент на сервере и в офлайн-режиме ведёт себя одинаково.
+В режиме разработки (`npm run dev`) запросы `/api` проксируются на сервер (`API_PROXY`, по умолчанию http://localhost:8000).
 
-Офлайн-режим без сервера (всё в браузере): `VITE_USE_MOCK=true npm run dev`.
-
-Сообщение бота может нести `offers`, `products`, `compare`, `sources`, `quickReplies`,
-`form: 'quote_request'` и `quoteId`; тикет хранит `requirements`, `pendingSlot`, `lastOffers`, `quoteId`.
+Сообщение агента может нести `offers`, `products`, `compare`, `sources`, `quickReplies`,
+`form: 'quote_request'` и `quoteId`; обращение хранит `requirements`, `pendingSlot`, `lastOffers`, `quoteId`.

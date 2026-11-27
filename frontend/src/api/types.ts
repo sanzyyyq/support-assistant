@@ -217,6 +217,35 @@ export interface Stats {
 }
 
 /** События реального времени (WebSocket у настоящего бэкенда). */
+// ── Сотрудники ────────────────────────────────────────────────────────
+
+/** admin — управляет сотрудниками; manager — работает с обращениями и КП */
+export type Role = 'admin' | 'manager';
+
+/** Вошедший сотрудник */
+export interface Operator {
+  id: number;
+  login: string;
+  /** Имя в чате с клиентом и в КП */
+  name: string;
+  role: Role;
+}
+
+export interface StaffUser extends Operator {
+  active: boolean;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+export interface NewStaffUser {
+  login: string;
+  name: string;
+  role: Role;
+  password: string;
+}
+
+export type StaffUserPatch = Partial<Pick<StaffUser, 'name' | 'role' | 'active'>> & { password?: string };
+
 export type SupportEvent =
   | { type: 'message'; message: Message }
   | { type: 'message_updated'; message: Message }

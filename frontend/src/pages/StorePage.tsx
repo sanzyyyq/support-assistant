@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { MessageCircle, Search, Sparkles, X } from 'lucide-react';
-import { featured, loadCatalog, type Family } from '../api/mock/catalog';
+import { api } from '../api/client';
 import type { Product } from '../api/types';
 import { ChatWindow } from '../components/ChatWindow';
 import { OriginBadge, iconFor } from '../components/ProductCard';
@@ -15,14 +16,15 @@ export function StorePage() {
   const [open, setOpen] = useState(false);
   const [teaser, setTeaser] = useState(true);
   const [prompt, setPrompt] = useState<{ text: string; key: number } | null>(null);
-  const [tiles, setTiles] = useState<Array<{ family: Family; from: Product }>>([]);
+  const [tiles, setTiles] = useState<Product[]>([]);
   const [total, setTotal] = useState<number | null>(null);
 
   useEffect(() => {
-    loadCatalog()
-      .then((cat) => {
-        setTiles(featured(cat));
-        setTotal(cat.families.reduce((s, f) => s + f.variants.length, 0));
+    api
+      .getFeatured()
+      .then(({ total, items }) => {
+        setTiles(items);
+        setTotal(total);
       })
       .catch(() => setTiles([]));
   }, []);
@@ -43,6 +45,9 @@ export function StorePage() {
           <span className="sr-only">Поиск по каталогу</span>
           <input placeholder={total ? `Поиск по ${formatNumber(total)} позициям каталога` : 'Поиск по каталогу'} />
         </label>
+        <Link className="btn btn--secondary store__chat-link" to="/chat" title="Чат с консультантом на весь экран">
+          <MessageCircle size={16} aria-hidden /> Чат с консультантом
+        </Link>
       </header>
 
       <nav className="store__cats" aria-label="Категории">
@@ -68,27 +73,27 @@ export function StorePage() {
 
       <section className="store__grid" aria-label="Популярные продукты">
         {!tiles.length && <p className="muted">Загружаю каталог…</p>}
-        {tiles.map(({ family, from }) => {
-          const Icon = iconFor(family.path);
+        {tiles.map((from) => {
+          const Icon = iconFor(from.categoryPath);
           return (
-            <article key={family.id} className="tile">
+            <article key={from.familyId} className="tile">
               <span className="tile__icon" aria-hidden>
                 <Icon size={24} />
               </span>
-              <span className="tile__vendor">{family.vendor}</span>
+              <span className="tile__vendor">{from.vendor}</span>
               <h3 className="tile__name">
                 <a href={from.url} target="_blank" rel="noreferrer">
-                  {family.title}
+                  {from.name}
                 </a>
               </h3>
-              {family.ru ? <OriginBadge compact registryNumber={family.registry ?? undefined} russianVendor /> : <span className="tile__spacer" />}
+              {from.russianVendor ? <OriginBadge compact registryNumber={from.registryNumber} russianVendor /> : <span className="tile__spacer" />}
               <b className="tile__price">
                 от {formatPrice(from.price)}
                 <span>
                   {from.pricing === 'pack' && from.tierMin ? ` за ${unitCount(from.tierMin, from.unit)}` : ''} · {termText(from.termMonths)}
                 </span>
               </b>
-              <button className="tile__ask" onClick={() => ask(`Расскажите про ${family.title}: что это и на каких платформах работает?`)}>
+              <button className="tile__ask" onClick={() => ask(`Расскажите про ${from.name}: что это и на каких платформах работает?`)}>
                 <MessageCircle size={14} /> Спросить консультанта
               </button>
             </article>

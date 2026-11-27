@@ -6,7 +6,7 @@ import type { Quote } from '../../api/types';
 import { printQuote } from '../../components/QuoteBlocks';
 import { QuoteDocument } from '../../components/QuoteDocument';
 import { Button } from '../../components/ui';
-import { OPERATOR, VAT_RATE } from '../../config';
+import { VAT_RATE } from '../../config';
 import { QUOTE_STATUS_LABEL, quoteTotals } from '../../lib/domain';
 import { formatAgo, formatPrice } from '../../lib/format';
 
@@ -72,7 +72,7 @@ export function QuotesPage() {
     if (!draft) return;
     setBusy(true);
     if (dirty) await save();
-    await api.approveQuote(draft.id, OPERATOR.name);
+    await api.approveQuote(draft.id);
     setBusy(false);
   };
 

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Единый образ: бэкенд (Node + Fastify) раздаёт API, WebSocket и собранный фронтенд.
+# Единый образ: сервер на Go раздаёт API, WebSocket и собранный фронтенд.
 # Railway и docker compose собирают именно его.
 
 # ── 1. Фронтенд ───────────────────────────────────────────────────────
@@ -8,34 +8,30 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
-# false — настоящий бэкенд (по умолчанию), true — офлайн-заглушка в браузере
-ARG VITE_USE_MOCK=false
-ENV VITE_USE_MOCK=$VITE_USE_MOCK
 RUN npm run build
 
-# ── 2. Бэкенд ─────────────────────────────────────────────────────────
-FROM node:20-alpine AS backend
-WORKDIR /app/backend
-COPY backend/package.json backend/package-lock.json ./
-RUN npm ci --no-audit --no-fund
-# Логика агента, каталог и КП — общий код из frontend/src, вшивается в бандл сервера
-COPY frontend/src /app/frontend/src
+# ── 2. Сервер на Go ───────────────────────────────────────────────────
+FROM golang:1.23-alpine AS backend
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
 COPY backend/ ./
-RUN npm run build && npm prune --omit=dev
+# Статический бинарник без зависимостей от системы
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /server .
 
 # ── 3. Запуск ─────────────────────────────────────────────────────────
-FROM node:20-alpine
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
-ENV NODE_ENV=production \
-    HOST=0.0.0.0 \
+ENV HOST=0.0.0.0 \
     PORT=8080 \
     PUBLIC_DIR=/app/public \
     DATA_DIR=/data
 
-COPY --from=backend /app/backend/node_modules ./node_modules
-COPY --from=backend /app/backend/package.json ./package.json
-COPY --from=backend /app/backend/dist ./dist
+COPY --from=backend /server ./server
 COPY --from=frontend /app/frontend/dist ./public
+# Каталог Store из фида и выжимка из переписок поддержки (для аналитики)
+COPY backend/data ./data
 
 # Обращения и КП. Том на /data подключается снаружи: в docker-compose.yml и в настройках Railway
 # (инструкцию VOLUME Railway не поддерживает)
@@ -45,4 +41,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
   CMD wget -qO- "http://127.0.0.1:${PORT}/healthz" || exit 1
 
-CMD ["node", "dist/server.mjs"]
+CMD ["./server"]

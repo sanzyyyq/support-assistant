@@ -1,6 +1,6 @@
 # ИИ-консультант Store — запуск в Docker
 #
-#   docker compose up --build                      → http://localhost:8080  (бэкенд + фронтенд, как на Railway)
+#   docker compose up --build                      → http://localhost:8080  (сервер на Go + фронтенд, как на Railway)
 #   docker compose --profile dev up                → http://localhost:5173  (разработка с горячей перезагрузкой)
 #   docker compose --profile tools run --rm catalog  → пересобрать каталог из фида и переписки
 
@@ -9,34 +9,65 @@ name: support-assistant
 services:
   # Итоговое приложение: один контейнер — API, WebSocket и собранный фронтенд
   app:
-    build:
-      context: .
-      args:
-        VITE_USE_MOCK: ${VITE_USE_MOCK:-false}
+    build: .
     environment:
-      ALLOW_RESET: ${ALLOW_RESET:-true}
+      ALLOW_RESET: ${ALLOW_RESET:-false}
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD:-app}@db:5432/support
+      # Первый администратор — создаётся, только пока в базе нет сотрудников (см. .env.example)
+      ADMIN_LOGIN: ${ADMIN_LOGIN:-admin}
+      ADMIN_NAME: ${ADMIN_NAME:-Администратор}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     ports:
       - "${APP_PORT:-8080}:8080"
     volumes:
       - app_data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Postgres: сотрудники кабинета и их сессии
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: support
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d support"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
 
   # ── Разработка ──────────────────────────────────────────────────────
-  # Бэкенд с перезапуском при изменениях (в том числе общего кода во frontend/src)
+  # Сервер на Go из исходников. После правок в backend/: docker compose --profile dev restart api-dev
   api-dev:
     profiles: [dev]
-    image: node:20-alpine
+    image: golang:1.23-alpine
     working_dir: /app/backend
-    command: sh -c "npm ci --no-audit --no-fund && npx tsx watch src/server.ts"
+    command: go run .
     environment:
       PORT: 8000
       DATA_DIR: /app/backend/.data
-      CATALOG_FILE: /app/frontend/public/data/catalog.json.gz
+      PUBLIC_DIR: /nonexistent
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD:-app}@db:5432/support
+      ADMIN_LOGIN: ${ADMIN_LOGIN:-admin}
+      ADMIN_NAME: ${ADMIN_NAME:-Администратор}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ALLOW_RESET: ${ALLOW_RESET:-false}
     volumes:
       - ./:/app
-      - api_node_modules:/app/backend/node_modules
+      - go_cache:/go
     ports:
       - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
 
   # Фронтенд с горячей перезагрузкой; /api проксируется в api-dev
   dev:
@@ -45,7 +76,6 @@ services:
     working_dir: /app
     command: sh -c "npm ci --no-audit --no-fund && npx vite --host 0.0.0.0 --port 5173 --strictPort"
     environment:
-      VITE_USE_MOCK: ${VITE_USE_MOCK:-false}
       API_PROXY: http://api-dev:8000
       CHOKIDAR_USEPOLLING: "true"
     volumes:
@@ -66,5 +96,6 @@ services:
 
 volumes:
   app_data:
-  api_node_modules:
+  db_data:
+  go_cache:
   dev_node_modules:

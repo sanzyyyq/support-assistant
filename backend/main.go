@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"support-assistant/internal/agent"
+	"support-assistant/internal/db"
 	"support-assistant/internal/server"
 	"support-assistant/internal/service"
 )
@@ -58,7 +59,9 @@ func run() error {
 	// Каталог из фида и выжимка из переписок — data/build_catalog.py и data/build_chats.py
 	catalogFile := env("CATALOG_FILE", firstExisting("/app/data/catalog.json.gz", "data/catalog.json.gz"))
 	chatsFile := env("CHATS_FILE", firstExisting("/app/data/chats.json", "data/chats.json"))
-	dataDir := env("DATA_DIR", ".data")
+	// Прежнее хранилище обращений (JSON-файл на томе). Если файл есть, при первом запуске его данные
+	// переносятся в Postgres, а файл удаляется
+	legacyFile := filepath.Join(env("DATA_DIR", "/data"), "db.json")
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		return errors.New("не задан DATABASE_URL. Локально: docker compose up (Postgres поднимется сам). " +
@@ -78,7 +81,12 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	auth, err := server.NewAuth(ctx, databaseURL)
+	pool, err := db.Connect(ctx, databaseURL)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	auth, err := server.NewAuth(pool)
 	if err != nil {
 		return err
 	}
@@ -87,7 +95,10 @@ func run() error {
 	}
 
 	hub := server.NewHub()
-	svc := service.New(cat, filepath.Join(dataDir, "db.json"), chats, hub.Emit)
+	svc := service.New(pool, cat, chats, hub.Emit)
+	if err := svc.Init(ctx, legacyFile); err != nil {
+		return err
+	}
 	srv := &http.Server{
 		Addr:              env("HOST", "0.0.0.0") + ":" + env("PORT", "8080"),
 		Handler:           server.New(cfg, cat, svc, auth, hub).Handler(),
@@ -96,7 +107,7 @@ func run() error {
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
-	slog.Info("сервер запущен", "адрес", srv.Addr, "данные", dataDir, "фронтенд", publicDir, "сброс демо", cfg.AllowReset)
+	slog.Info("сервер запущен", "адрес", srv.Addr, "фронтенд", publicDir, "сброс демо", cfg.AllowReset)
 
 	select {
 	case err := <-errc:
@@ -105,7 +116,7 @@ func run() error {
 		slog.Info("останавливаюсь")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		server.Shutdown(shutdownCtx, srv, svc, auth)
+		server.Shutdown(shutdownCtx, srv)
 		return nil
 	}
 }

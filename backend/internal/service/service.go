@@ -1,21 +1,26 @@
 // Package service — логика поддержки: диалоги с агентом, передача менеджеру, КП, статистика.
-// HTTP-обработчики (internal/server) только разбирают запрос и вызывают методы Service.
+// Данные — в Postgres (repo.go). HTTP-обработчики (internal/server) только разбирают запрос и вызывают методы Service.
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	mrand "math/rand/v2"
 	"os"
-	"sort"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"support-assistant/internal/agent"
+	"support-assistant/internal/db"
 	"support-assistant/internal/model"
 )
 
@@ -28,6 +33,10 @@ func (e NotFoundError) Error() string { return e.What + " не найдено" }
 type BadRequestError struct{ Msg string }
 
 func (e BadRequestError) Error() string { return e.Msg }
+
+// IsNotFound / IsBadRequest — для HTTP-кодов ответа.
+func IsNotFound(err error) bool   { return errors.As(err, &NotFoundError{}) }
+func IsBadRequest(err error) bool { return errors.As(err, &BadRequestError{}) }
 
 // ChatsSummary — выжимка из переписок поддержки (backend/data/chats.json) для аналитики.
 type ChatsSummary struct {
@@ -44,35 +53,64 @@ func LoadChats(path string) (ChatsSummary, error) {
 	return c, json.Unmarshal(data, &c)
 }
 
-// Service — все операции с обращениями. Один мьютекс на всё: нагрузка демо небольшая, так проще и надёжнее.
+// Service — все операции с обращениями.
+// Изменения обращения идут по очереди (мьютекс): агент читает диалог и дописывает ответ,
+// не мешая менеджеру. Рассчитано на один экземпляр сервера.
 type Service struct {
 	mu    sync.Mutex
+	pool  *pgxpool.Pool
 	cat   *agent.Catalog
-	store *Store
 	chats ChatsSummary
-	// Emit — разослать событие подписчикам WebSocket (вызывается под мьютексом, не должен блокироваться)
+	// emit — разослать событие подписчикам WebSocket (не блокируется)
 	emit func(model.Event)
-	// Задержки «агент печатает…»; в тестах можно обнулить
+	// TypingDelay — пауза «агент печатает…» перед n-м сообщением ответа
 	TypingDelay func(n int) time.Duration
 }
 
-func New(cat *agent.Catalog, dataFile string, chats ChatsSummary, emit func(model.Event)) *Service {
-	s := &Service{cat: cat, chats: chats, emit: emit}
-	s.store = NewStore(&s.mu, dataFile, func() *agent.DB { return agent.CreateSeed(cat, time.Now()) })
-	s.TypingDelay = func(n int) time.Duration {
-		if n == 0 {
-			return time.Duration(700+mrand.IntN(700)) * time.Millisecond
-		}
-		return 500 * time.Millisecond
+func New(pool *pgxpool.Pool, cat *agent.Catalog, chats ChatsSummary, emit func(model.Event)) *Service {
+	return &Service{
+		pool: pool, cat: cat, chats: chats, emit: emit,
+		TypingDelay: func(n int) time.Duration {
+			if n == 0 {
+				return time.Duration(700+mrand.IntN(700)) * time.Millisecond
+			}
+			return 500 * time.Millisecond
+		},
 	}
-	s.mu.Lock()
-	s.store.Load()
-	s.mu.Unlock()
-	return s
 }
 
-// Flush — сохранить данные перед остановкой.
-func (s *Service) Flush() { s.store.Flush() }
+// Init — первый запуск: если в базе нет обращений, перенести их из прежнего db.json (если есть) или создать демо-данные.
+func (s *Service) Init(ctx context.Context, legacyFile string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	empty, err := isEmpty(ctx, s.pool)
+	if err != nil || !empty {
+		return err
+	}
+	if legacyFile != "" {
+		if raw, err := os.ReadFile(legacyFile); err == nil {
+			var old agent.DB
+			if err := json.Unmarshal(raw, &old); err != nil {
+				return fmt.Errorf("%s: %w", legacyFile, err)
+			}
+			if err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error { return fill(ctx, tx, &old) }); err != nil {
+				return fmt.Errorf("перенос %s в базу: %w", legacyFile, err)
+			}
+			// Данные уже в базе — файл больше не нужен
+			if err := os.Remove(legacyFile); err != nil {
+				slog.Warn("перенёс данные, но не удалил файл", "файл", legacyFile, "ошибка", err)
+			}
+			slog.Info("обращения перенесены из файла в базу", "файл", legacyFile, "обращений", len(old.Tickets), "сообщений", len(old.Messages), "КП", len(old.Quotes))
+			return nil
+		}
+	}
+	seed := agent.CreateSeed(s.cat, time.Now())
+	if err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error { return fill(ctx, tx, seed) }); err != nil {
+		return fmt.Errorf("демо-данные: %w", err)
+	}
+	slog.Info("созданы демо-обращения", "обращений", len(seed.Tickets))
+	return nil
+}
 
 // ── Внутренние помощники (вызываются под s.mu) ────────────────────────
 
@@ -84,81 +122,93 @@ func uid() string {
 	return hex.EncodeToString(b)
 }
 
-func (s *Service) db() *agent.DB { return s.store.DB() }
-
-func (s *Service) findTicket(id string) (*model.Ticket, error) {
-	for _, t := range s.db().Tickets {
-		if t.ID == id {
-			return t, nil
-		}
-	}
-	return nil, NotFoundError{"Обращение " + id}
+// change — прочитать обращение, изменить его в транзакции и разослать события после сохранения.
+// fn получает транзакцию и возвращает новые сообщения (они добавляются в диалог).
+type change struct {
+	t        *model.Ticket
+	messages []model.Message
+	events   []model.Event
 }
 
-func (s *Service) findQuote(id string) (*model.Quote, error) {
-	for _, q := range s.db().Quotes {
-		if q.ID == id {
-			return q, nil
-		}
-	}
-	return nil, NotFoundError{"КП " + id}
-}
-
-func (s *Service) emitTicket(t *model.Ticket) {
-	c := *t
-	s.emit(model.Event{Type: "ticket_updated", Ticket: &c})
-}
-
-func (s *Service) emitQuote(q *model.Quote) {
-	c := *q
-	s.emit(model.Event{Type: "quote_updated", Quote: &c})
-}
-
-// post — добавить сообщения в диалог и разослать события.
-func (s *Service) post(t *model.Ticket, drafts ...agent.Draft) []model.Message {
+func (c *change) post(drafts ...agent.Draft) []model.Message {
 	var out []model.Message
 	for _, d := range drafts {
 		m := d
-		m.ID, m.TicketID, m.CreatedAt = uid(), t.ID, now()
-		s.db().Messages = append(s.db().Messages, &m)
-		t.UpdatedAt = m.CreatedAt
+		m.ID, m.TicketID, m.CreatedAt = uid(), c.t.ID, now()
+		c.t.UpdatedAt = m.CreatedAt
 		if m.Sender != "system" {
-			t.LastMessage = m.Text
+			c.t.LastMessage = m.Text
 		}
+		c.messages = append(c.messages, m)
 		out = append(out, m)
 	}
-	s.store.Changed()
-	for i := range out {
-		m := out[i]
-		s.emit(model.Event{Type: "message", Message: &m})
-	}
-	s.emitTicket(t)
 	return out
 }
 
-func (s *Service) system(t *model.Ticket, text string) {
-	s.post(t, agent.Draft{Sender: "system", Text: text})
+func (c *change) system(text string) { c.post(agent.Draft{Sender: "system", Text: text}) }
+
+// history — сообщения диалога из базы плюс ещё не сохранённые из этого изменения.
+func (s *Service) history(ctx context.Context, q db.Querier, c *change) ([]model.Message, error) {
+	msgs, err := ticketMessages(ctx, q, c.t.ID)
+	return append(msgs, c.messages...), err
 }
 
-// touch — обращение изменилось: обновить время, сохранить, разослать.
-func (s *Service) touch(t *model.Ticket) {
-	t.UpdatedAt = now()
-	s.store.Changed()
-	s.emitTicket(t)
-}
-
-func (s *Service) handoff(t *model.Ticket, reason string, confidence float64, botText string) {
-	if botText != "" {
-		s.post(t, agent.Draft{Sender: "bot", Intent: "handoff", Text: botText})
+// edit — изменить обращение: fn меняет c.t и добавляет сообщения через c.post.
+// Всё сохраняется в одной транзакции, события рассылаются после записи.
+func (s *Service) edit(ctx context.Context, ticketID string, fn func(tx pgx.Tx, c *change) error) (*change, error) {
+	var c *change
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		t, err := getTicket(ctx, tx, ticketID)
+		if err != nil {
+			return err
+		}
+		c = &change{t: t}
+		if err := fn(tx, c); err != nil {
+			return err
+		}
+		if len(c.messages) == 0 {
+			c.t.UpdatedAt = now()
+		}
+		for i := range c.messages {
+			if err := insertMessage(ctx, tx, &c.messages[i]); err != nil {
+				return err
+			}
+		}
+		return saveTicket(ctx, tx, c.t)
+	})
+	if err != nil {
+		return nil, err
 	}
+	for _, e := range c.events {
+		s.emit(e)
+	}
+	for i := range c.messages {
+		m := c.messages[i]
+		s.emit(model.Event{Type: "message", Message: &m})
+	}
+	t := *c.t
+	s.emit(model.Event{Type: "ticket_updated", Ticket: &t})
+	return c, nil
+}
+
+// handoff — передать диалог менеджеру (внутри edit).
+func (s *Service) handoff(ctx context.Context, tx pgx.Tx, c *change, reason string, confidence float64, botText string) error {
+	if botText != "" {
+		c.post(agent.Draft{Sender: "bot", Intent: "handoff", Text: botText})
+	}
+	t := c.t
 	t.Status = "waiting"
 	t.HandoffAt = now()
 	t.HandoffReason = reason
 	t.AIConfidence = &confidence
 	t.PendingSlot = ""
-	t.AISummary = agent.BuildSummary(t, s.db().TicketMessages(t.ID), reason)
-	s.touch(t)
-	s.system(t, "ИИ передал диалог оператору")
+	history, err := s.history(ctx, tx, c)
+	if err != nil {
+		return err
+	}
+	t.AISummary = agent.BuildSummary(t, history, reason)
+	c.system("ИИ передал диалог оператору")
+	return nil
 }
 
 func (s *Service) typing(ticketID string, active bool) {
@@ -167,21 +217,36 @@ func (s *Service) typing(ticketID string, active bool) {
 
 // runBot — агент «печатает» и отвечает (в отдельной горутине, чтобы клиент сразу получил своё сообщение).
 func (s *Service) runBot(ticketID, text string) {
+	ctx := context.Background()
 	s.typing(ticketID, true)
 	time.Sleep(s.TypingDelay(0))
 	s.typing(ticketID, false)
 
+	var reply agent.Reply
+	silent := false
 	s.mu.Lock()
-	t, err := s.findTicket(ticketID)
-	// Пока агент «думал», мог подключиться менеджер — тогда молчим
-	if err != nil || t.Status != "ai" {
-		s.mu.Unlock()
+	_, err := s.edit(ctx, ticketID, func(tx pgx.Tx, c *change) error {
+		// Пока агент «думал», мог подключиться менеджер — тогда молчим
+		if c.t.Status != "ai" {
+			silent = true
+			return errSkip
+		}
+		history, err := s.history(ctx, tx, c)
+		if err != nil {
+			return err
+		}
+		reply = agent.GenerateReply(s.cat, c.t, text, history)
+		agent.ApplyReply(c.t, reply)
+		return nil
+	})
+	s.mu.Unlock()
+	if silent || errors.Is(err, errSkip) {
 		return
 	}
-	reply := agent.GenerateReply(s.cat, t, text, s.db().TicketMessages(ticketID))
-	agent.ApplyReply(t, reply)
-	s.touch(t)
-	s.mu.Unlock()
+	if err != nil {
+		slog.Error("ответ агента", "обращение", ticketID, "ошибка", err)
+		return
+	}
 
 	for i, m := range reply.Messages {
 		if i > 0 {
@@ -190,125 +255,168 @@ func (s *Service) runBot(ticketID, text string) {
 			s.typing(ticketID, false)
 		}
 		s.mu.Lock()
-		if t, err := s.findTicket(ticketID); err == nil {
-			s.post(t, m)
-		}
+		_, err := s.edit(ctx, ticketID, func(_ pgx.Tx, c *change) error {
+			c.post(m)
+			return nil
+		})
 		s.mu.Unlock()
+		if err != nil {
+			slog.Error("сообщение агента", "обращение", ticketID, "ошибка", err)
+			return
+		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, err = s.findTicket(ticketID)
+	_, err = s.edit(ctx, ticketID, func(tx pgx.Tx, c *change) error {
+		if reply.Handoff == nil {
+			// Резюме обновляется по ходу диалога — менеджер видит суть, не читая переписку
+			history, err := s.history(ctx, tx, c)
+			if err != nil {
+				return err
+			}
+			c.t.AISummary = agent.BuildSummary(c.t, history, "")
+			return nil
+		}
+		botText := ""
+		if len(reply.Messages) == 0 {
+			botText = agent.HandoffText
+		}
+		return s.handoff(ctx, tx, c, reply.Handoff.Reason, reply.Handoff.Confidence, botText)
+	})
 	if err != nil {
-		return
+		slog.Error("резюме для менеджера", "обращение", ticketID, "ошибка", err)
 	}
-	if reply.Handoff == nil {
-		// Резюме обновляется по ходу диалога — менеджер видит суть, не читая переписку
-		t.AISummary = agent.BuildSummary(t, s.db().TicketMessages(ticketID), "")
-		s.touch(t)
-		return
-	}
-	botText := ""
-	if len(reply.Messages) == 0 {
-		botText = agent.HandoffText
-	}
-	s.handoff(t, reply.Handoff.Reason, reply.Handoff.Confidence, botText)
 }
+
+// errSkip — изменение не нужно (транзакция откатывается без ошибки для пользователя).
+var errSkip = errors.New("skip")
 
 // ── Клиент ────────────────────────────────────────────────────────────
 
 // StartSession — продолжить диалог клиента (ticketID из его браузера) или начать новый.
-func (s *Service) StartSession(ticketID string, forceNew bool) model.Session {
+func (s *Service) StartSession(ctx context.Context, ticketID string, forceNew bool) (model.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !forceNew && ticketID != "" {
-		if t, err := s.findTicket(ticketID); err == nil {
-			return model.Session{Ticket: *t, Messages: s.db().TicketMessages(t.ID)}
+		t, err := getTicket(ctx, s.pool, ticketID)
+		if err == nil {
+			msgs, err := ticketMessages(ctx, s.pool, t.ID)
+			return model.Session{Ticket: *t, Messages: msgs}, err
+		}
+		if !IsNotFound(err) {
+			return model.Session{}, err
 		}
 	}
-	db := s.db()
-	number := db.Seq
-	db.Seq++
-	t := &model.Ticket{
-		ID: fmt.Sprintf("t-%d", number), Number: number, Channel: "web", Status: "ai",
-		CreatedAt: now(), UpdatedAt: now(), Tags: []string{}, Sentiment: "neutral",
-		Customer: model.Customer{ID: uid(), Name: fmt.Sprintf("Посетитель #%d", number)},
+	var t *model.Ticket
+	var greeting model.Message
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		number, err := nextNumber(ctx, tx, "ticket")
+		if err != nil {
+			return err
+		}
+		t = &model.Ticket{
+			ID: fmt.Sprintf("t-%d", number), Number: number, Channel: "web", Status: "ai",
+			CreatedAt: now(), UpdatedAt: now(), Tags: []string{}, Sentiment: "neutral",
+			Customer: model.Customer{ID: uid(), Name: fmt.Sprintf("Посетитель #%d", number)},
+		}
+		c := &change{t: t}
+		greeting = c.post(agent.Greeting())[0]
+		if err := saveTicket(ctx, tx, t); err != nil {
+			return err
+		}
+		return insertMessage(ctx, tx, &greeting)
+	})
+	if err != nil {
+		return model.Session{}, err
 	}
-	db.Tickets = append(db.Tickets, t)
-	s.emitTicket(t)
-	msgs := s.post(t, agent.Greeting())
-	return model.Session{Ticket: *t, Messages: msgs}
+	tc := *t
+	s.emit(model.Event{Type: "ticket_updated", Ticket: &tc})
+	s.emit(model.Event{Type: "message", Message: &greeting})
+	return model.Session{Ticket: *t, Messages: []model.Message{greeting}}, nil
 }
 
-func (s *Service) SendCustomerMessage(ticketID, text string) (model.Message, error) {
+func (s *Service) SendCustomerMessage(ctx context.Context, ticketID, text string) (model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, err := s.findTicket(ticketID)
+	var msg model.Message
+	startBot := false
+	_, err := s.edit(ctx, ticketID, func(_ pgx.Tx, c *change) error {
+		msg = c.post(agent.Draft{Sender: "user", Text: text})[0]
+		switch c.t.Status {
+		case "closed":
+			c.t.Status = "ai"
+			c.t.Assignee = ""
+			c.system("Диалог возобновлён")
+			startBot = true
+		case "ai":
+			startBot = true
+		}
+		return nil
+	})
 	if err != nil {
 		return model.Message{}, err
 	}
-	msg := s.post(t, agent.Draft{Sender: "user", Text: text})[0]
-	switch t.Status {
-	case "closed":
-		t.Status = "ai"
-		t.Assignee = ""
-		s.touch(t)
-		s.system(t, "Диалог возобновлён")
-		go s.runBot(ticketID, text)
-	case "ai":
+	if startBot {
 		go s.runBot(ticketID, text)
 	}
 	return msg, nil
 }
 
-func (s *Service) RequestOperator(ticketID string) error {
+func (s *Service) RequestOperator(ctx context.Context, ticketID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, err := s.findTicket(ticketID)
-	if err != nil {
-		return err
-	}
-	if t.Status == "waiting" || t.Status == "operator" {
+	_, err := s.edit(ctx, ticketID, func(tx pgx.Tx, c *change) error {
+		if c.t.Status == "waiting" || c.t.Status == "operator" {
+			return errSkip
+		}
+		conf := 0.7
+		if c.t.AIConfidence != nil {
+			conf = *c.t.AIConfidence
+		}
+		return s.handoff(ctx, tx, c, "Клиент попросил менеджера", conf, agent.HandoffText)
+	})
+	if errors.Is(err, errSkip) {
 		return nil
 	}
-	conf := 0.7
-	if t.AIConfidence != nil {
-		conf = *t.AIConfidence
-	}
-	s.handoff(t, "Клиент попросил менеджера", conf, agent.HandoffText)
-	return nil
+	return err
 }
 
-func (s *Service) SubmitQuoteRequest(ticketID, messageID string, req model.QuoteRequest) (model.Quote, error) {
+func (s *Service) SubmitQuoteRequest(ctx context.Context, ticketID, messageID string, req model.QuoteRequest) (model.Quote, error) {
+	var q model.Quote
 	s.mu.Lock()
-	t, err := s.findTicket(ticketID)
+	_, err := s.edit(ctx, ticketID, func(tx pgx.Tx, c *change) error {
+		offer := c.t.SelectedOffer()
+		if offer == nil {
+			return BadRequestError{"Нет выбранного решения"}
+		}
+		seq, err := nextNumber(ctx, tx, "quote")
+		if err != nil {
+			return err
+		}
+		q = agent.BuildQuote(c.t, *offer, req, seq, time.Now())
+		if err := saveQuote(ctx, tx, &q); err != nil {
+			return err
+		}
+		qc := q
+		c.events = append(c.events, model.Event{Type: "quote_updated", Quote: &qc})
+		// Форма в чате заполнена
+		if m, err := getMessage(ctx, tx, messageID); err == nil && m.TicketID == c.t.ID {
+			m.FormDone = true
+			if err := updateMessage(ctx, tx, m); err != nil {
+				return err
+			}
+			c.events = append(c.events, model.Event{Type: "message_updated", Message: m})
+		}
+		c.t.QuoteID = q.ID
+		c.t.Customer.Company, c.t.Customer.INN, c.t.Customer.Email = req.Company, req.INN, req.Email
+		c.t.AddTag("КП")
+		return nil
+	})
+	s.mu.Unlock()
 	if err != nil {
-		s.mu.Unlock()
 		return model.Quote{}, err
 	}
-	offer := t.SelectedOffer()
-	if offer == nil {
-		s.mu.Unlock()
-		return model.Quote{}, BadRequestError{"Нет выбранного решения"}
-	}
-	db := s.db()
-	q := agent.BuildQuote(t, *offer, req, db.QuoteSeq, time.Now())
-	db.QuoteSeq++
-	db.Quotes = append(db.Quotes, &q)
-	s.emitQuote(&q)
-	for _, m := range db.Messages {
-		if m.ID == messageID {
-			m.FormDone = true
-			c := *m
-			s.emit(model.Event{Type: "message_updated", Message: &c})
-			break
-		}
-	}
-	t.QuoteID = q.ID
-	t.Customer.Company, t.Customer.INN, t.Customer.Email = req.Company, req.INN, req.Email
-	t.AddTag("КП")
-	s.touch(t)
-	s.mu.Unlock()
 
 	s.typing(ticketID, true)
 	time.Sleep(s.TypingDelay(1) + 100*time.Millisecond)
@@ -316,38 +424,40 @@ func (s *Service) SubmitQuoteRequest(ticketID, messageID string, req model.Quote
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if t, err := s.findTicket(ticketID); err == nil {
-		s.post(t, agent.Draft{
+	_, err = s.edit(ctx, ticketID, func(_ pgx.Tx, c *change) error {
+		c.post(agent.Draft{
 			Sender: "bot", Intent: "quote_created", QuoteID: q.ID,
 			Text:         "Готово! Черновик " + q.Number + " на " + agent.FormatPrice(agent.QuoteSum(q)) + " сформирован по шаблону и передан менеджеру на проверку. После согласования он придёт на " + q.Email + ".",
 			QuickReplies: []string{"Как происходит поставка?", "Позвать менеджера"},
 		})
-	}
-	return q, nil
+		return nil
+	})
+	return q, err
 }
 
 // RateMessage — 👍 / 👎 ответу агента; value "" снимает оценку.
-func (s *Service) RateMessage(messageID, value string) error {
+func (s *Service) RateMessage(ctx context.Context, messageID, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, m := range s.db().Messages {
-		if m.ID == messageID {
-			m.Feedback = value
-			s.store.Changed()
-			c := *m
-			s.emit(model.Event{Type: "message_updated", Message: &c})
-			return nil
-		}
+	m, err := getMessage(ctx, s.pool, messageID)
+	if err != nil {
+		return err
 	}
-	return NotFoundError{"Сообщение"}
+	m.Feedback = value
+	if err := updateMessage(ctx, s.pool, m); err != nil {
+		return err
+	}
+	s.emit(model.Event{Type: "message_updated", Message: m})
+	return nil
 }
 
 // CustomerQuote — КП своего обращения (клиент видит только его).
-func (s *Service) CustomerQuote(ticketID, quoteID string) (model.Quote, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	q, err := s.findQuote(quoteID)
-	if err != nil || q.TicketID != ticketID {
+func (s *Service) CustomerQuote(ctx context.Context, ticketID, quoteID string) (model.Quote, error) {
+	q, err := getQuote(ctx, s.pool, quoteID)
+	if err != nil {
+		return model.Quote{}, err
+	}
+	if q.TicketID != ticketID {
 		return model.Quote{}, NotFoundError{"КП " + quoteID}
 	}
 	return *q, nil
@@ -355,96 +465,63 @@ func (s *Service) CustomerQuote(ticketID, quoteID string) (model.Quote, error) {
 
 // ── Менеджер ──────────────────────────────────────────────────────────
 
-func byDate[T any](list []*T, key func(*T) string) []T {
-	out := make([]T, len(list))
-	for i, x := range list {
-		out[i] = *x
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		a, _ := time.Parse(time.RFC3339Nano, key(&out[i]))
-		b, _ := time.Parse(time.RFC3339Nano, key(&out[j]))
-		return a.After(b)
+func (s *Service) ListTickets(ctx context.Context) ([]model.Ticket, error) {
+	return listTickets(ctx, s.pool)
+}
+
+func (s *Service) Messages(ctx context.Context, ticketID string) ([]model.Message, error) {
+	return ticketMessages(ctx, s.pool, ticketID)
+}
+
+func (s *Service) JoinTicket(ctx context.Context, ticketID, operatorName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.edit(ctx, ticketID, func(_ pgx.Tx, c *change) error {
+		c.t.Status = "operator"
+		c.t.Assignee = operatorName
+		c.t.PendingSlot = ""
+		c.system("В чате оператор: " + operatorName)
+		return nil
 	})
-	return out
+	return err
 }
 
-func (s *Service) ListTickets() []model.Ticket {
+func (s *Service) ReleaseToAI(ctx context.Context, ticketID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return byDate(s.db().Tickets, func(t *model.Ticket) string {
-		if t.UpdatedAt != "" {
-			return t.UpdatedAt
-		}
-		return t.CreatedAt
+	_, err := s.edit(ctx, ticketID, func(_ pgx.Tx, c *change) error {
+		c.t.Status = "ai"
+		c.t.Assignee = ""
+		c.system("Диалог снова ведёт ИИ-консультант")
+		return nil
 	})
+	return err
 }
 
-func (s *Service) Messages(ticketID string) []model.Message {
+func (s *Service) CloseTicket(ctx context.Context, ticketID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	msgs := s.db().TicketMessages(ticketID)
-	if msgs == nil {
-		msgs = []model.Message{}
-	}
-	return msgs
+	_, err := s.edit(ctx, ticketID, func(_ pgx.Tx, c *change) error {
+		c.t.Status = "closed"
+		c.system("Обращение закрыто")
+		return nil
+	})
+	return err
 }
 
-func (s *Service) JoinTicket(ticketID, operatorName string) error {
+func (s *Service) SendOperatorMessage(ctx context.Context, ticketID, text, operatorName string) (model.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, err := s.findTicket(ticketID)
-	if err != nil {
-		return err
-	}
-	t.Status = "operator"
-	t.Assignee = operatorName
-	t.PendingSlot = ""
-	s.touch(t)
-	s.system(t, "В чате оператор: "+operatorName)
-	return nil
+	var msg model.Message
+	_, err := s.edit(ctx, ticketID, func(_ pgx.Tx, c *change) error {
+		msg = c.post(agent.Draft{Sender: "operator", Text: text, AuthorName: operatorName})[0]
+		return nil
+	})
+	return msg, err
 }
 
-func (s *Service) ReleaseToAI(ticketID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, err := s.findTicket(ticketID)
-	if err != nil {
-		return err
-	}
-	t.Status = "ai"
-	t.Assignee = ""
-	s.touch(t)
-	s.system(t, "Диалог снова ведёт ИИ-консультант")
-	return nil
-}
-
-func (s *Service) CloseTicket(ticketID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, err := s.findTicket(ticketID)
-	if err != nil {
-		return err
-	}
-	t.Status = "closed"
-	s.touch(t)
-	s.system(t, "Обращение закрыто")
-	return nil
-}
-
-func (s *Service) SendOperatorMessage(ticketID, text, operatorName string) (model.Message, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, err := s.findTicket(ticketID)
-	if err != nil {
-		return model.Message{}, err
-	}
-	return s.post(t, agent.Draft{Sender: "operator", Text: text, AuthorName: operatorName})[0], nil
-}
-
-func (s *Service) Suggestion(ticketID, operatorName string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, err := s.findTicket(ticketID)
+func (s *Service) Suggestion(ctx context.Context, ticketID, operatorName string) (string, error) {
+	t, err := getTicket(ctx, s.pool, ticketID)
 	if err != nil {
 		return "", err
 	}
@@ -453,16 +530,12 @@ func (s *Service) Suggestion(ticketID, operatorName string) (string, error) {
 
 // ── КП ────────────────────────────────────────────────────────────────
 
-func (s *Service) ListQuotes() []model.Quote {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return byDate(s.db().Quotes, func(q *model.Quote) string { return q.CreatedAt })
+func (s *Service) ListQuotes(ctx context.Context) ([]model.Quote, error) {
+	return listQuotes(ctx, s.pool)
 }
 
-func (s *Service) Quote(id string) (model.Quote, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	q, err := s.findQuote(id)
+func (s *Service) Quote(ctx context.Context, id string) (model.Quote, error) {
+	q, err := getQuote(ctx, s.pool, id)
 	if err != nil {
 		return model.Quote{}, err
 	}
@@ -481,10 +554,10 @@ type QuotePatch struct {
 	Email        *string            `json:"email"`
 }
 
-func (s *Service) UpdateQuote(id string, p QuotePatch) (model.Quote, error) {
+func (s *Service) UpdateQuote(ctx context.Context, id string, p QuotePatch) (model.Quote, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	q, err := s.findQuote(id)
+	q, err := getQuote(ctx, s.pool, id)
 	if err != nil {
 		return model.Quote{}, err
 	}
@@ -503,24 +576,33 @@ func (s *Service) UpdateQuote(id string, p QuotePatch) (model.Quote, error) {
 	set(&q.Company, p.Company)
 	set(&q.INN, p.INN)
 	set(&q.Email, p.Email)
-	s.store.Changed()
-	s.emitQuote(q)
+	if err := saveQuote(ctx, s.pool, q); err != nil {
+		return model.Quote{}, err
+	}
+	s.emit(model.Event{Type: "quote_updated", Quote: q})
 	return *q, nil
 }
 
-func (s *Service) ApproveQuote(id, reviewer string) (model.Quote, error) {
+func (s *Service) ApproveQuote(ctx context.Context, id, reviewer string) (model.Quote, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	q, err := s.findQuote(id)
+	q, err := getQuote(ctx, s.pool, id)
 	if err != nil {
 		return model.Quote{}, err
 	}
-	q.Status = "sent"
-	q.Reviewer = reviewer
-	s.store.Changed()
-	s.emitQuote(q)
-	if t, err := s.findTicket(q.TicketID); err == nil {
-		s.system(t, q.Number+" согласовано и отправлено на "+q.Email)
+	_, err = s.edit(ctx, q.TicketID, func(tx pgx.Tx, c *change) error {
+		q.Status = "sent"
+		q.Reviewer = reviewer
+		if err := saveQuote(ctx, tx, q); err != nil {
+			return err
+		}
+		qc := *q
+		c.events = append(c.events, model.Event{Type: "quote_updated", Quote: &qc})
+		c.system(q.Number + " согласовано и отправлено на " + q.Email)
+		return nil
+	})
+	if err != nil {
+		return model.Quote{}, err
 	}
 	return *q, nil
 }
@@ -529,66 +611,65 @@ func (s *Service) ApproveQuote(id, reviewer string) (model.Quote, error) {
 
 func jsRound(x float64) float64 { return math.Floor(x + 0.5) }
 
-// Stats — база: реальные переписки поддержки (≈500 обращений, как в презентации) + живые данные.
-func (s *Service) Stats() model.Stats {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	db := s.db()
-	base := struct {
-		tickets, aiResolved, handoffs, quotes, up, down float64
-		quotesAmount                                    float64
-	}{
-		tickets: float64(s.chats.Total), aiResolved: jsRound(float64(s.chats.Total) * 0.71), handoffs: jsRound(float64(s.chats.Total) * 0.22),
-		quotes: 41, quotesAmount: 11_870_000, up: 214, down: 23,
+// Stats — база: реальные переписки поддержки (≈500 обращений, как в презентации) + живые данные из Postgres.
+func (s *Service) Stats(ctx context.Context) (model.Stats, error) {
+	var live, handoffs, up, down int
+	var quotes int
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT count(*) FROM tickets),
+			(SELECT count(*) FROM tickets WHERE data->>'handoffAt' IS NOT NULL OR assignee IS NOT NULL),
+			(SELECT count(*) FROM messages WHERE data->>'feedback' = 'up'),
+			(SELECT count(*) FROM messages WHERE data->>'feedback' = 'down'),
+			(SELECT count(*) FROM quotes)`).Scan(&live, &handoffs, &up, &down, &quotes)
+	if err != nil {
+		return model.Stats{}, err
 	}
-	handoffs, aiResolved, up, down := 0.0, 0.0, base.up, base.down
-	for _, t := range db.Tickets {
-		if t.HandoffAt != "" || t.Assignee != "" {
-			handoffs++
-		} else {
-			aiResolved++
-		}
+	all, err := listQuotes(ctx, s.pool)
+	if err != nil {
+		return model.Stats{}, err
 	}
-	for _, m := range db.Messages {
-		switch m.Feedback {
-		case "up":
-			up++
-		case "down":
-			down++
-		}
+	amount := 11_870_000.0
+	for _, q := range all {
+		amount += agent.QuoteSum(q)
 	}
-	total := base.tickets + float64(len(db.Tickets))
-	amount := base.quotesAmount
-	for _, q := range db.Quotes {
-		amount += agent.QuoteSum(*q)
-	}
+	total := float64(s.chats.Total + live)
+	baseAI, baseHandoffs := jsRound(float64(s.chats.Total)*0.71), jsRound(float64(s.chats.Total)*0.22)
+	aiResolved := float64(live - handoffs)
+	ups, downs := float64(214+up), float64(23+down)
 	intents := s.chats.Categories
 	if intents == nil {
 		intents = []model.IntentCount{}
 	}
 	return model.Stats{
 		TicketsToday:     int(total),
-		AIResolvedPct:    int(jsRound((base.aiResolved + aiResolved) / total * 100)),
-		HandoffPct:       int(jsRound((base.handoffs + handoffs) / total * 100)),
+		AIResolvedPct:    int(jsRound((baseAI + aiResolved) / total * 100)),
+		HandoffPct:       int(jsRound((baseHandoffs + float64(handoffs)) / total * 100)),
 		FirstResponseSec: 1.8,
-		Quotes:           len(db.Quotes) + int(base.quotes),
+		Quotes:           quotes + 41,
 		QuotesAmount:     amount,
-		CsatPct:          int(jsRound(up / (up + down) * 100)),
-		RatedCount:       int(up + down),
+		CsatPct:          int(jsRound(ups / (ups + downs) * 100)),
+		RatedCount:       int(ups + downs),
 		TopIntents:       intents,
 		// ~8 минут ручной работы на обращение, которое закрыл ИИ
-		HoursSavedPerDay: jsRound((base.aiResolved+aiResolved)*8/60*10) / 10,
-	}
+		HoursSavedPerDay: jsRound((baseAI+aiResolved)*8/60*10) / 10,
+	}, nil
 }
 
-// ResetDemo — вернуть демо-данные к исходным.
-func (s *Service) ResetDemo() {
+// ResetDemo — удалить все обращения и КП и создать демо-данные заново.
+func (s *Service) ResetDemo(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.store.Reset()
+	seed := agent.CreateSeed(s.cat, time.Now())
+	err := db.InTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := clearAll(ctx, tx); err != nil {
+			return err
+		}
+		return fill(ctx, tx, seed)
+	})
+	if err != nil {
+		return err
+	}
 	s.emit(model.Event{Type: "reset"})
+	return nil
 }
-
-// IsNotFound / IsBadRequest — для HTTP-кодов ответа.
-func IsNotFound(err error) bool   { return errors.As(err, &NotFoundError{}) }
-func IsBadRequest(err error) bool { return errors.As(err, &BadRequestError{}) }

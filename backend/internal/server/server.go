@@ -85,43 +85,52 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(pattern, s.requireOperator(h))
 	}
 	op("POST /api/auth/password", s.changePassword)
-	op("GET /api/tickets", func(w http.ResponseWriter, r *http.Request, _ model.Operator) { writeJSON(w, 200, s.svc.ListTickets()) })
+	op("GET /api/tickets", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
+		list, err := s.svc.ListTickets(r.Context())
+		respond(w, list, err)
+	})
 	op("GET /api/tickets/{id}/messages", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
-		writeJSON(w, 200, s.svc.Messages(r.PathValue("id")))
+		msgs, err := s.svc.Messages(r.Context(), r.PathValue("id"))
+		respond(w, msgs, err)
 	})
 	// Имя менеджера в чате и КП берётся из его учётной записи, а не из запроса
 	op("POST /api/tickets/{id}/join", func(w http.ResponseWriter, r *http.Request, me model.Operator) {
-		noContent(w, s.svc.JoinTicket(r.PathValue("id"), me.Name))
+		noContent(w, s.svc.JoinTicket(r.Context(), r.PathValue("id"), me.Name))
 	})
 	op("POST /api/tickets/{id}/release", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
-		noContent(w, s.svc.ReleaseToAI(r.PathValue("id")))
+		noContent(w, s.svc.ReleaseToAI(r.Context(), r.PathValue("id")))
 	})
 	op("POST /api/tickets/{id}/close", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
-		noContent(w, s.svc.CloseTicket(r.PathValue("id")))
+		noContent(w, s.svc.CloseTicket(r.Context(), r.PathValue("id")))
 	})
 	op("POST /api/tickets/{id}/messages", s.operatorMessage)
 	op("GET /api/tickets/{id}/suggestion", func(w http.ResponseWriter, r *http.Request, me model.Operator) {
-		text, err := s.svc.Suggestion(r.PathValue("id"), me.Name)
+		text, err := s.svc.Suggestion(r.Context(), r.PathValue("id"), me.Name)
 		respond(w, map[string]string{"text": text}, err)
 	})
-	op("GET /api/quotes", func(w http.ResponseWriter, r *http.Request, _ model.Operator) { writeJSON(w, 200, s.svc.ListQuotes()) })
+	op("GET /api/quotes", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
+		list, err := s.svc.ListQuotes(r.Context())
+		respond(w, list, err)
+	})
 	op("GET /api/quotes/{id}", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
-		q, err := s.svc.Quote(r.PathValue("id"))
+		q, err := s.svc.Quote(r.Context(), r.PathValue("id"))
 		respond(w, q, err)
 	})
 	op("PATCH /api/quotes/{id}", s.updateQuote)
 	op("POST /api/quotes/{id}/approve", func(w http.ResponseWriter, r *http.Request, me model.Operator) {
-		q, err := s.svc.ApproveQuote(r.PathValue("id"), me.Name)
+		q, err := s.svc.ApproveQuote(r.Context(), r.PathValue("id"), me.Name)
 		respond(w, q, err)
 	})
-	op("GET /api/stats", func(w http.ResponseWriter, r *http.Request, _ model.Operator) { writeJSON(w, 200, s.svc.Stats()) })
+	op("GET /api/stats", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
+		st, err := s.svc.Stats(r.Context())
+		respond(w, st, err)
+	})
 	op("POST /api/admin/reset", func(w http.ResponseWriter, r *http.Request, _ model.Operator) {
 		if !s.cfg.AllowReset {
 			writeJSON(w, 403, errBody("Сброс отключён (ALLOW_RESET не true)"))
 			return
 		}
-		s.svc.ResetDemo()
-		w.WriteHeader(204)
+		noContent(w, s.svc.ResetDemo(r.Context()))
 	})
 
 	// ── Сотрудники: только администратор ──
@@ -151,7 +160,8 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request) {
 		ForceNew bool   `json:"forceNew"`
 	}
 	_ = readJSON(r, &body) // пустое тело — новый диалог
-	writeJSON(w, 200, s.svc.StartSession(body.TicketID, body.ForceNew))
+	sess, err := s.svc.StartSession(r.Context(), body.TicketID, body.ForceNew)
+	respond(w, sess, err)
 }
 
 func (s *Server) customerMessage(w http.ResponseWriter, r *http.Request) {
@@ -167,12 +177,12 @@ func (s *Server) customerMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	msg, err := s.svc.SendCustomerMessage(r.PathValue("id"), text)
+	msg, err := s.svc.SendCustomerMessage(r.Context(), r.PathValue("id"), text)
 	respond(w, msg, err)
 }
 
 func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
-	noContent(w, s.svc.RequestOperator(r.PathValue("id")))
+	noContent(w, s.svc.RequestOperator(r.Context(), r.PathValue("id")))
 }
 
 func (s *Server) quoteRequest(w http.ResponseWriter, r *http.Request) {
@@ -203,12 +213,12 @@ func (s *Server) quoteRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	q, err := s.svc.SubmitQuoteRequest(r.PathValue("id"), msgID, req)
+	q, err := s.svc.SubmitQuoteRequest(r.Context(), r.PathValue("id"), msgID, req)
 	respond(w, q, err)
 }
 
 func (s *Server) customerQuote(w http.ResponseWriter, r *http.Request) {
-	q, err := s.svc.CustomerQuote(r.PathValue("id"), r.PathValue("quoteId"))
+	q, err := s.svc.CustomerQuote(r.Context(), r.PathValue("id"), r.PathValue("quoteId"))
 	respond(w, q, err)
 }
 
@@ -224,7 +234,7 @@ func (s *Server) feedback(w http.ResponseWriter, r *http.Request) {
 	if body.Value != nil && (*body.Value == "up" || *body.Value == "down") {
 		v = *body.Value
 	}
-	noContent(w, s.svc.RateMessage(r.PathValue("id"), v))
+	noContent(w, s.svc.RateMessage(r.Context(), r.PathValue("id"), v))
 }
 
 // ── Вход и сотрудники ─────────────────────────────────────────────────
@@ -305,7 +315,7 @@ func (s *Server) operatorMessage(w http.ResponseWriter, r *http.Request, me mode
 		writeError(w, err)
 		return
 	}
-	msg, err := s.svc.SendOperatorMessage(r.PathValue("id"), text, me.Name)
+	msg, err := s.svc.SendOperatorMessage(r.Context(), r.PathValue("id"), text, me.Name)
 	respond(w, msg, err)
 }
 
@@ -316,7 +326,7 @@ func (s *Server) updateQuote(w http.ResponseWriter, r *http.Request, _ model.Ope
 		writeError(w, err)
 		return
 	}
-	q, err := s.svc.UpdateQuote(r.PathValue("id"), p)
+	q, err := s.svc.UpdateQuote(r.Context(), r.PathValue("id"), p)
 	respond(w, q, err)
 }
 
@@ -479,9 +489,7 @@ func logRequests(next http.Handler) http.Handler {
 	})
 }
 
-// Shutdown — аккуратная остановка: дождаться текущих запросов и сохранить данные.
-func Shutdown(ctx context.Context, srv *http.Server, svc *service.Service, auth *Auth) {
+// Shutdown — аккуратная остановка: дождаться текущих запросов.
+func Shutdown(ctx context.Context, srv *http.Server) {
 	_ = srv.Shutdown(ctx)
-	svc.Flush()
-	auth.Close()
 }

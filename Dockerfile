@@ -25,17 +25,14 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 ENV HOST=0.0.0.0 \
     PORT=8080 \
-    PUBLIC_DIR=/app/public \
-    DATA_DIR=/data
+    PUBLIC_DIR=/app/public
 
 COPY --from=backend /server ./server
 COPY --from=frontend /app/frontend/dist ./public
 # Каталог Store из фида и выжимка из переписок поддержки (для аналитики)
 COPY backend/data ./data
 
-# Обращения и КП. Том на /data подключается снаружи: в docker-compose.yml и в настройках Railway
-# (инструкцию VOLUME Railway не поддерживает)
-RUN mkdir -p /data
+# Обращения, сообщения чатов и КП хранятся в Postgres (DATABASE_URL)
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \

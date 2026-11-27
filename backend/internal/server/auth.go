@@ -52,59 +52,14 @@ type Auth struct {
 	limiter   *loginLimiter
 }
 
-// ── База ──────────────────────────────────────────────────────────────
-
-var migrations = []string{
-	`CREATE TABLE IF NOT EXISTS users (
-		id            serial PRIMARY KEY,
-		login         text NOT NULL,
-		name          text NOT NULL,
-		role          text NOT NULL CHECK (role IN ('admin', 'manager')),
-		password_hash text NOT NULL,
-		active        boolean NOT NULL DEFAULT true,
-		created_at    timestamptz NOT NULL DEFAULT now(),
-		last_login_at timestamptz
-	)`,
-	`CREATE UNIQUE INDEX IF NOT EXISTS users_login_key ON users (lower(login))`,
-	`CREATE TABLE IF NOT EXISTS sessions (
-		token_hash text PRIMARY KEY,
-		user_id    integer NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-		created_at timestamptz NOT NULL DEFAULT now(),
-		expires_at timestamptz NOT NULL
-	)`,
-	`CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id)`,
-}
-
-// NewAuth — подключиться к Postgres (с повторами, пока база поднимается) и создать таблицы.
-func NewAuth(ctx context.Context, databaseURL string) (*Auth, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("DATABASE_URL: %w", err)
-	}
-	for attempt := 1; ; attempt++ {
-		err = pool.Ping(ctx)
-		if err == nil {
-			break
-		}
-		if attempt >= 20 {
-			return nil, fmt.Errorf("Postgres недоступен: %w", err)
-		}
-		slog.Warn("Postgres недоступен, жду", "попытка", attempt, "ошибка", err)
-		time.Sleep(1500 * time.Millisecond)
-	}
-	for _, sql := range migrations {
-		if _, err := pool.Exec(ctx, sql); err != nil {
-			return nil, fmt.Errorf("создание таблиц: %w", err)
-		}
-	}
+// NewAuth — сотрудники в общей базе (таблицы создаёт пакет db).
+func NewAuth(pool *pgxpool.Pool) (*Auth, error) {
 	dummy, err := hashPassword(randomString(12))
 	if err != nil {
 		return nil, err
 	}
 	return &Auth{db: pool, dummyHash: dummy, limiter: newLoginLimiter()}, nil
 }
-
-func (a *Auth) Close() { a.db.Close() }
 
 // ── Пароли (формат совместим с прежней версией сервера на Node) ───────
 

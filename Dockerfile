@@ -37,9 +37,9 @@ COPY --from=backend /app/backend/package.json ./package.json
 COPY --from=backend /app/backend/dist ./dist
 COPY --from=frontend /app/frontend/dist ./public
 
-# Обращения и КП. На Railway сюда монтируется том, чтобы данные переживали перезапуск
+# Обращения и КП. Том на /data подключается снаружи: в docker-compose.yml и в настройках Railway
+# (инструкцию VOLUME Railway не поддерживает)
 RUN mkdir -p /data
-VOLUME ["/data"]
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \

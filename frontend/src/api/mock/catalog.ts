@@ -103,10 +103,20 @@ const stemMatch = (q: string, w: string) => {
 let loading: Promise<Catalog> | null = null;
 let loaded: Catalog | null = null;
 
+/** На сервере каталог читается с диска — загрузчик подменяется через setCatalogLoader */
+let customLoader: (() => Promise<Uint8Array>) | null = null;
+export const setCatalogLoader = (fn: () => Promise<Uint8Array>) => {
+  customLoader = fn;
+};
+
 async function fetchCatalog(): Promise<{ families: Omit<Family, 'titleWords' | 'vendorWords' | 'pathText' | 'hasNew'>[]; generatedFrom: string }> {
-  const res = await fetch(`${import.meta.env.BASE_URL}data/catalog.json.gz`);
-  if (!res.ok) throw new Error(`Каталог не загрузился: ${res.status}`);
-  const buf = new Uint8Array(await res.arrayBuffer());
+  let buf: Uint8Array<ArrayBuffer>;
+  if (customLoader) buf = new Uint8Array(await customLoader());
+  else {
+    const res = await fetch(`${import.meta.env.BASE_URL}data/catalog.json.gz`);
+    if (!res.ok) throw new Error(`Каталог не загрузился: ${res.status}`);
+    buf = new Uint8Array(await res.arrayBuffer());
+  }
   const gz = buf[0] === 0x1f && buf[1] === 0x8b;
   const text = gz
     ? await new Response(new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'))).text()

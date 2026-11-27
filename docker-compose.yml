@@ -1,43 +1,63 @@
 # ИИ-консультант Store — запуск в Docker
 #
-#   docker compose up --build              → http://localhost:8080  (сборка + nginx)
-#   docker compose --profile dev up dev    → http://localhost:5173  (разработка с горячей перезагрузкой)
-#   docker compose --profile tools run --rm catalog   → пересобрать каталог из фида и переписки
+#   docker compose up --build                      → http://localhost:8080  (бэкенд + фронтенд, как на Railway)
+#   docker compose --profile dev up                → http://localhost:5173  (разработка с горячей перезагрузкой)
+#   docker compose --profile tools run --rm catalog  → пересобрать каталог из фида и переписки
 
 name: support-assistant
 
 services:
-  # Готовая сборка: витрина с виджетом (/), чат (/chat), кабинет менеджера (/operator)
-  web:
+  # Итоговое приложение: один контейнер — API, WebSocket и собранный фронтенд
+  app:
     build:
-      context: ./frontend
+      context: .
       args:
-        VITE_USE_MOCK: ${VITE_USE_MOCK:-true}
-        VITE_API_URL: ${VITE_API_URL:-/api}
+        VITE_USE_MOCK: ${VITE_USE_MOCK:-false}
     environment:
-      # Куда nginx проксирует /api, когда появится бэкенд (VITE_USE_MOCK=false)
-      BACKEND_URL: ${BACKEND_URL:-http://backend:8000}
+      ALLOW_RESET: ${ALLOW_RESET:-true}
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${APP_PORT:-8080}:8080"
+    volumes:
+      - app_data:/data
     restart: unless-stopped
 
-  # Разработка: Vite с горячей перезагрузкой, исходники монтируются с хоста
+  # ── Разработка ──────────────────────────────────────────────────────
+  # Бэкенд с перезапуском при изменениях (в том числе общего кода во frontend/src)
+  api-dev:
+    profiles: [dev]
+    image: node:20-alpine
+    working_dir: /app/backend
+    command: sh -c "npm ci --no-audit --no-fund && npx tsx watch src/server.ts"
+    environment:
+      PORT: 8000
+      DATA_DIR: /app/backend/.data
+      CATALOG_FILE: /app/frontend/public/data/catalog.json.gz
+    volumes:
+      - ./:/app
+      - api_node_modules:/app/backend/node_modules
+    ports:
+      - "8000:8000"
+
+  # Фронтенд с горячей перезагрузкой; /api проксируется в api-dev
   dev:
     profiles: [dev]
     image: node:20-alpine
     working_dir: /app
     command: sh -c "npm ci --no-audit --no-fund && npx vite --host 0.0.0.0 --port 5173 --strictPort"
     environment:
-      VITE_USE_MOCK: ${VITE_USE_MOCK:-true}
-      # Отслеживание изменений через опрос — надёжнее на смонтированных папках macOS/Windows
+      VITE_USE_MOCK: ${VITE_USE_MOCK:-false}
+      API_PROXY: http://api-dev:8000
       CHOKIDAR_USEPOLLING: "true"
     volumes:
       - ./frontend:/app
       - dev_node_modules:/app/node_modules
     ports:
       - "${DEV_PORT:-5173}:5173"
+    depends_on:
+      - api-dev
 
-  # Утилита: каталог из фида Mindbox.yml.gz.xml и выжимка из «чаты поддержки»
+  # ── Утилиты ─────────────────────────────────────────────────────────
+  # Каталог из фида Mindbox.yml.gz.xml и выжимка из «чаты поддержки»
   catalog:
     profiles: [tools]
     build: ./data
@@ -45,4 +65,6 @@ services:
       - ./:/work
 
 volumes:
+  app_data:
+  api_node_modules:
   dev_node_modules:

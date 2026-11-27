@@ -1,3 +1,7 @@
 Mindbox.yml.gz.xml
 *.yml.xml
 .DS_Store
+node_modules/
+dist/
+backend/.data/
+.env

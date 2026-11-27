@@ -72,9 +72,7 @@ export function subscribe(listener: (e: SupportEvent) => void) {
   };
 }
 
-/** Сбросить демо-данные (кнопка в панели менеджера). */
-export async function resetDb() {
-  await ensureDb();
+/** Пересоздать демо-данные (событие reset рассылает сервис). */
+export function reseed() {
   seed();
-  emit({ type: 'reset' });
 }

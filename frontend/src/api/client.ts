@@ -49,11 +49,15 @@ export interface SupportApi {
   /** GET /api/stats */
   getStats(): Promise<Stats>;
 
+  /** POST /api/admin/reset — вернуть демо-данные к исходному состоянию */
+  resetDemo(): Promise<void>;
+
   // ── Реальное время ──────────────────────────────────────
   /** WS /api/ws — подписка на события; возвращает функцию отписки */
   subscribe(listener: (event: SupportEvent) => void): () => void;
 }
 
-export const USE_MOCK = import.meta.env.VITE_USE_MOCK !== 'false';
+/** По умолчанию — настоящий бэкенд; VITE_USE_MOCK=true включает офлайн-заглушку в браузере */
+export const USE_MOCK = import.meta.env.VITE_USE_MOCK === 'true';
 
 export const api: SupportApi = USE_MOCK ? mockApi : httpApi;

@@ -1,8 +1,8 @@
 import type { SupportApi } from './client';
 import type { Message, Quote, Session, Stats, SupportEvent, Ticket } from './types';
 
-// Реализация под настоящий бэкенд. Включается через VITE_USE_MOCK=false.
-// Пока бэкенда нет — это просто описание контракта в коде.
+// Реализация под настоящий бэкенд (support-assistant/backend). Используется по умолчанию;
+// VITE_USE_MOCK=true переключает на офлайн-заглушку в браузере.
 
 const BASE = import.meta.env.VITE_API_URL ?? '/api';
 const SESSION_KEY = 'support-assistant.session-ticket';
@@ -10,7 +10,7 @@ const SESSION_KEY = 'support-assistant.session-ticket';
 async function req<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(BASE + path, {
     ...init,
-    headers: { 'Content-Type': 'application/json', ...(init.headers ?? {}) },
+    headers: init.body ? { 'Content-Type': 'application/json', ...(init.headers ?? {}) } : init.headers,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${path}`);
   if (res.status === 204) return undefined as T;
@@ -43,6 +43,7 @@ export const httpApi: SupportApi = {
   updateQuote: (id, patch) => req<Quote>(`/quotes/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
   approveQuote: (id, reviewer) => post<Quote>(`/quotes/${id}/approve`, { reviewer }),
   getStats: () => req<Stats>('/stats'),
+  resetDemo: () => post<void>('/admin/reset'),
 
   listTickets: () => req<Ticket[]>('/tickets'),
   getMessages: (ticketId) => req<Message[]>(`/tickets/${ticketId}/messages`),

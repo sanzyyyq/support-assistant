@@ -1,0 +1,11 @@
+# В образ не попадают исходные данные хакатона и локальные сборки
+**/node_modules
+**/dist
+**/.data
+**/.DS_Store
+Mindbox.yml.gz.xml
+*.yml.xml
+*.pdf
+чаты поддержки
+data
+.git

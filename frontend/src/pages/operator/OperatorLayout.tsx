@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { BarChart3, FileText, Inbox, RotateCcw, Sparkles, Store } from 'lucide-react';
-import { api, USE_MOCK } from '../../api/client';
-import { resetDb } from '../../api/mock/store';
+import { api } from '../../api/client';
 import { OPERATOR } from '../../config';
 import { initials } from '../../lib/format';
 import '../../styles/operator.css';
@@ -45,16 +44,14 @@ export function OperatorLayout() {
           <Store size={22} />
         </a>
         <span className="rail__spacer" />
-        {USE_MOCK && (
-          <button
-            className="rail__item"
-            aria-label="Сбросить демо-данные"
-            title="Сбросить демо-данные"
-            onClick={() => window.confirm('Сбросить все демо-обращения и КП к исходному состоянию?') && resetDb()}
-          >
-            <RotateCcw size={20} />
-          </button>
-        )}
+        <button
+          className="rail__item"
+          aria-label="Сбросить демо-данные"
+          title="Сбросить демо-данные"
+          onClick={() => window.confirm('Сбросить все демо-обращения и КП к исходному состоянию?') && void api.resetDemo()}
+        >
+          <RotateCcw size={20} />
+        </button>
         <span className="avatar avatar--success" style={{ width: 40, height: 40 }} title={OPERATOR.name}>
           {initials(OPERATOR.name)}
         </span>

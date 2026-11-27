@@ -7,30 +7,22 @@ React 18 + TypeScript + Vite. Палитра «Бордо» из макетов 
 
 ## Запуск
 
-Проще всего через Docker — из папки `support-assistant`:
+Через Docker из папки `support-assistant` — бэкенд и фронтенд в одном контейнере:
 
 ```bash
-docker compose up --build        # http://localhost:8080
-```
-
-Подробнее (режим разработки, пересборка каталога, переменные) — в [../README.md](../README.md).
-
-Без Docker:
-
-```bash
-npm install
-npm run dev                      # http://localhost:5173
+docker compose up --build
 ```
 
 | Адрес | Что это |
 | --- | --- |
-| http://localhost:5173/ | Демо-витрина Store с виджетом консультанта (кнопка справа внизу) |
-| http://localhost:5173/chat | Тот же чат на весь экран (мобильные, iframe) |
-| http://localhost:5173/operator | Кабинет менеджера: обращения |
-| http://localhost:5173/operator/quotes | Очередь КП на проверку |
-| http://localhost:5173/operator/analytics | Метрики |
+| http://localhost:8080/ | Демо-витрина Store с виджетом консультанта (кнопка справа внизу) |
+| http://localhost:8080/chat | Тот же чат на весь экран (мобильные, iframe) |
+| http://localhost:8080/operator | Кабинет менеджера: обращения |
+| http://localhost:8080/operator/quotes | Очередь КП на проверку |
+| http://localhost:8080/operator/analytics | Метрики |
 
-Витрину и кабинет удобно держать в соседних вкладках — всё синхронизируется вживую.
+Клиент и менеджер синхронизируются через сервер (WebSocket) — можно открыть с разных устройств.
+Режим разработки, деплой на Railway и переменные окружения — в [../README.md](../README.md).
 
 ## Демо-сценарий для питча
 
@@ -46,7 +38,7 @@ npm run dev                      # http://localhost:5173
 Второй сценарий (реальная реплика из переписок): «85 лицензий Kaspersky Endpoint Security для бизнеса Стандартный —
 какие есть и в чём разница?» → сверка редакций Стандартный / Расширенный / Расширенный Плюс по цене за 85 узлов.
 
-## Что сделано на заглушках
+## Что умеет
 
 **Клиент:** два сценария (знает продукт / подбор), уточняющие вопросы кнопками, карточки ПО (вендор, редакция,
 тип лицензии, платформы, реестр ПО, цена), варианты с обоснованием, сравнение, российские аналоги,
@@ -83,16 +75,23 @@ npm run dev                      # http://localhost:5173
 
 Демо-обращения в кабинете — реальные реплики из переписок (номера тоже оттуда), прогнанные через того же бота.
 
-## Бэкенд
+## Бэкенд и офлайн-режим
 
-UI работает только через интерфейс `SupportApi` (`src/api/client.ts`). Сейчас за ним заглушка
-(`src/api/mock/*`: «БД» в localStorage, события между вкладками через BroadcastChannel, бот на правилах).
-Реализация под настоящий REST + WebSocket — `src/api/http.ts`, включается так:
+UI работает только через интерфейс `SupportApi` (`src/api/client.ts`).
 
-```bash
-VITE_USE_MOCK=false npm run dev   # /api проксируется на localhost:8000
-```
+| Файл | Что делает |
+| --- | --- |
+| `src/api/types.ts` | контракт данных (Ticket, Message, Product, Quote, события) |
+| `src/api/client.ts` | интерфейс API и выбор реализации; эндпоинты описаны в комментариях |
+| `src/api/http.ts` | клиент сервера (REST + WebSocket `/api/ws`) — используется по умолчанию |
+| `src/api/core/service.ts` | логика API: диалоги, передача менеджеру, КП, статистика — общая для сервера и браузера |
+| `src/api/mock/*` | агент (`bot.ts`), каталог и цены (`catalog.ts`), варианты и КП (`offers.ts`), база знаний (`kb.ts`), демо-данные (`data.ts`) |
+| `src/api/mock/mockApi.ts`, `store.ts` | офлайн-режим: тот же сервис, данные в localStorage, события через BroadcastChannel |
 
-Эндпоинты и формы данных описаны комментариями в `src/api/client.ts` и типами в `src/api/types.ts`.
-Ключевое для бэкенда: сообщение бота может нести `offers`, `products`, `compare`, `sources`, `quickReplies`,
+Сервер (`../backend`) подключает `core/service.ts` и модули из `mock/` к файловому хранилищу и WebSocket,
+поэтому агент на сервере и в офлайн-режиме ведёт себя одинаково.
+
+Офлайн-режим без сервера (всё в браузере): `VITE_USE_MOCK=true npm run dev`.
+
+Сообщение бота может нести `offers`, `products`, `compare`, `sources`, `quickReplies`,
 `form: 'quote_request'` и `quoteId`; тикет хранит `requirements`, `pendingSlot`, `lastOffers`, `quoteId`.

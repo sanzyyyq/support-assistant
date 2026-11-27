@@ -1,0 +1,234 @@
+/* Демо-витрина магазина, поверх которой живёт виджет */
+.store {
+  min-height: 100%;
+  background: var(--bg-surface);
+}
+.store__header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 40px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+}
+.store__logo {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 800;
+  color: var(--brand-primary);
+  letter-spacing: -0.02em;
+}
+.store__demo {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.store__search {
+  flex: 1;
+  max-width: 520px;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 14px;
+  border-radius: 10px;
+  background: var(--bg-subtle);
+  color: var(--text-placeholder);
+}
+.store__search input {
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+.store__cats {
+  display: flex;
+  gap: 24px;
+  padding: 12px 40px;
+  overflow-x: auto;
+  font-size: 14px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.store__hero {
+  margin: 24px 40px;
+  padding: 40px;
+  border-radius: 24px;
+  background: linear-gradient(120deg, var(--brand-soft), var(--bg-app) 70%);
+}
+.store__hero h1 {
+  margin: 0 0 8px;
+  font-size: 32px;
+  line-height: 40px;
+  letter-spacing: -0.02em;
+}
+.store__hero p {
+  max-width: 560px;
+  margin: 0 0 20px;
+  font-size: 16px;
+  line-height: 24px;
+  color: var(--text-secondary);
+}
+.store__hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.store__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  padding: 0 40px 120px;
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  transition: box-shadow 0.15s;
+}
+.tile:hover {
+  box-shadow: var(--shadow-float);
+}
+.tile__icon {
+  margin-bottom: 6px;
+}
+.tile__name {
+  margin: 0;
+  min-height: 40px;
+  font-size: 15px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.tile__spacer {
+  height: 20px;
+}
+.tile__price {
+  margin-top: auto;
+  padding-top: 6px;
+}
+.tile__price span {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.tile__name a {
+  color: inherit;
+  text-decoration: none;
+}
+.tile__name a:hover {
+  color: var(--text-brand);
+}
+.tile__ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 4px 0;
+  color: var(--text-brand);
+  font-size: 13px;
+  font-weight: 500;
+}
+.tile__ask:hover {
+  text-decoration: underline;
+}
+
+/* ── Widget ─────────────────────────────────────────── */
+.launcher {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--brand-primary);
+  color: var(--text-inverse);
+  box-shadow: var(--shadow-float);
+  transition: transform 0.15s, background 0.15s;
+}
+.launcher:hover {
+  transform: scale(1.05);
+  background: var(--brand-primary-hover);
+}
+.launcher-teaser {
+  position: fixed;
+  right: 24px;
+  bottom: 96px;
+  z-index: 20;
+  max-width: 260px;
+  padding: 12px 32px 12px 14px;
+  border-radius: 14px 14px 4px 14px;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-float);
+  animation: msg-in 0.3s ease-out;
+}
+.launcher-teaser__text {
+  text-align: left;
+  font-size: 13px;
+  line-height: 18px;
+}
+.launcher-teaser__close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+}
+.widget {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  width: 440px;
+  height: min(720px, calc(100vh - 48px));
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(17, 24, 39, 0.22);
+  animation: msg-in 0.2s ease-out;
+}
+
+@media (max-width: 640px) {
+  .store__header,
+  .store__cats {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .store__search {
+    display: none;
+  }
+  .store__hero {
+    margin: 16px;
+    padding: 24px;
+  }
+  .store__hero h1 {
+    font-size: 24px;
+    line-height: 30px;
+  }
+  .store__grid {
+    padding: 0 16px 100px;
+  }
+  .widget {
+    inset: 0;
+    width: auto;
+    height: auto;
+    border-radius: 0;
+  }
+}

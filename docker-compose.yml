@@ -1,0 +1,48 @@
+# ИИ-консультант Store — запуск в Docker
+#
+#   docker compose up --build              → http://localhost:8080  (сборка + nginx)
+#   docker compose --profile dev up dev    → http://localhost:5173  (разработка с горячей перезагрузкой)
+#   docker compose --profile tools run --rm catalog   → пересобрать каталог из фида и переписки
+
+name: support-assistant
+
+services:
+  # Готовая сборка: витрина с виджетом (/), чат (/chat), кабинет менеджера (/operator)
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_USE_MOCK: ${VITE_USE_MOCK:-true}
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    environment:
+      # Куда nginx проксирует /api, когда появится бэкенд (VITE_USE_MOCK=false)
+      BACKEND_URL: ${BACKEND_URL:-http://backend:8000}
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    restart: unless-stopped
+
+  # Разработка: Vite с горячей перезагрузкой, исходники монтируются с хоста
+  dev:
+    profiles: [dev]
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm ci --no-audit --no-fund && npx vite --host 0.0.0.0 --port 5173 --strictPort"
+    environment:
+      VITE_USE_MOCK: ${VITE_USE_MOCK:-true}
+      # Отслеживание изменений через опрос — надёжнее на смонтированных папках macOS/Windows
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./frontend:/app
+      - dev_node_modules:/app/node_modules
+    ports:
+      - "${DEV_PORT:-5173}:5173"
+
+  # Утилита: каталог из фида Mindbox.yml.gz.xml и выжимка из «чаты поддержки»
+  catalog:
+    profiles: [tools]
+    build: ./data
+    volumes:
+      - ./:/work
+
+volumes:
+  dev_node_modules:

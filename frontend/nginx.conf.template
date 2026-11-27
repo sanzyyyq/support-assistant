@@ -1,0 +1,49 @@
+# Шаблон: переменные ${...} подставляет entrypoint образа nginx при старте контейнера.
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Сжатие текстовых ответов
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+    gzip_min_length 1024;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Каталог уже сжат (catalog.json.gz) — браузер распаковывает его сам, отдаём как есть
+    location /data/ {
+        types { application/octet-stream gz; }
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    # Файлы сборки с хешем в имени можно кешировать надолго
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
+    }
+
+    # Настоящий бэкенд (используется при VITE_USE_MOCK=false). Адрес резолвится при запросе,
+    # поэтому контейнер стартует и без запущенного бэкенда.
+    location /api/ {
+        resolver 127.0.0.11 valid=30s ipv6=off;
+        set $backend ${BACKEND_URL};
+        proxy_pass $backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 300s;
+    }
+
+    # SPA: /operator, /chat и т.п. отдаёт index.html, маршрутизацию делает React Router
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
